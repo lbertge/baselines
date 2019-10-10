@@ -103,7 +103,7 @@ def add_vtarg_and_adv(seg, gamma, lam):
 
 
 def learn(env, policy_func, reward_giver, expert_dataset, rank,
-          pretrained, pretrained_weight, *,
+          pretrained_weight, *,
           g_step, d_step, entcoeff, save_per_iter,
           ckpt_dir, log_dir, timesteps_per_batch, task_name,
           gamma, lam,

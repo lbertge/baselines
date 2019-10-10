@@ -139,7 +139,7 @@ def train(env, seed, policy_fn, reward_giver, dataset, algo,
         set_global_seeds(workerseed)
         env.seed(workerseed)
         trpo_mpi.learn(env, policy_fn, reward_giver, dataset, rank,
-                       pretrained=pretrained, pretrained_weight=pretrained_weight,
+                       pretrained_weight=pretrained_weight,
                        g_step=g_step, d_step=d_step,
                        entcoeff=policy_entcoeff,
                        max_timesteps=num_timesteps,
@@ -151,7 +151,16 @@ def train(env, seed, policy_fn, reward_giver, dataset, algo,
                        vf_iters=5, vf_stepsize=1e-3,
                        task_name=task_name)
     else:
-        raise NotImplementedError
+        from baselines.gail import ppo_mpi
+        rank = MPI.COMM_WORLD.Get_rank()
+        if rank != 0:
+            logger.set_level(logger.DISABLED)
+        workerseed = seed + 10000 * MPI.COMM_WORLD.Get_rank()
+        set_global_seeds(workerseed)
+        env.seed(workerseed)
+
+        ppo_mpi.learn(network='mlp', env=env, reward_giver=reward_giver, expert_dataset=dataset,
+                      d_step=d_step, total_timesteps=num_timesteps)
 
 
 def runner(env, policy_func, load_model_path, timesteps_per_batch, number_trajs,
