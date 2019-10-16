@@ -42,7 +42,8 @@ def learn(*, network, env, reward_giver, expert_dataset, d_step, d_stepsize=3e-4
 
     policy = build_policy(env, network, **network_kwargs)
 
-    nenvs = env.num_envs
+    # nenvs = env.num_envs
+    nenvs = 1
 
     ob_space = env.observation_space
     ac_space = env.action_space
@@ -55,7 +56,7 @@ def learn(*, network, env, reward_giver, expert_dataset, d_step, d_stepsize=3e-4
         from baselines.ppo2.model import Model
         model_fn = Model
 
-    model = model_fn(policy=policy, ob_space=ob_space, ac_space=ac_space, nbatch_act=nenvs,
+    model = model_fn(policy=policy, ob_space=ob_space, ac_space=ac_space, nbatch_act=nenvs, nbatch_train=nbatch_train,
                      nsteps=nsteps, ent_coef=ent_coef, vf_coef=vf_coef,
                      max_grad_norm=max_grad_norm, comm=comm, mpi_rank_weight=mpi_rank_weight)
 
