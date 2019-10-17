@@ -27,6 +27,8 @@ def argsparser():
     parser.add_argument('--env', help='environment ID', default='Hopper-v2')
     parser.add_argument('--seed', help='RNG seed', type=int, default=0)
     parser.add_argument('--num_env', help='Number of environment copies being run in parallel. When not specified, set to number of cpus for Atari, and to 1 for Mujoco', default=1, type=int)
+    parser.add_argument('--env_type', help='type of environment, used when the environment type cannot be automatically determined', type=str)
+    parser.add_argument('--reward_scale', help='Reward scale factor. Default: 1.0', default=1.0, type=float)
     parser.add_argument('--expert_path', type=str, default='data/deterministic.trpo.Hopper.0.00.npz')
     parser.add_argument('--checkpoint_dir', help='the directory to save model', default='checkpoint')
     parser.add_argument('--log_dir', help='the directory to save log file', default='log')
@@ -59,12 +61,12 @@ def argsparser():
 
 
 def get_task_name(args):
-    task_name = args.algo + "_gail."
+    task_name = args.alg + "_gail."
     if args.pretrained:
         task_name += "with_pretrained."
     if args.traj_limitation != np.inf:
         task_name += "transition_limitation_%d." % args.traj_limitation
-    task_name += args.env_id.split("-")[0]
+    task_name += args.env.split("-")[0]
     task_name = task_name + ".g_step_" + str(args.g_step) + ".d_step_" + str(args.d_step) + \
         ".policy_entcoeff_" + str(args.policy_entcoeff) + ".adversary_entcoeff_" + str(args.adversary_entcoeff)
     task_name += ".seed_" + str(args.seed)
@@ -84,6 +86,8 @@ def main(args):
     task_name = get_task_name(args)
     args.checkpoint_dir = osp.join(args.checkpoint_dir, task_name)
     args.log_dir = osp.join(args.log_dir, task_name)
+    
+    print(env)
 
     if args.task == 'train':
         dataset = Mujoco_Dset(expert_path=args.expert_path, traj_limitation=args.traj_limitation)
@@ -93,7 +97,7 @@ def main(args):
               policy_fn,
               reward_giver,
               dataset,
-              args.algo,
+              args.alg,
               args.g_step,
               args.d_step,
               args.policy_entcoeff,
@@ -119,9 +123,11 @@ def main(args):
     env.close()
 
 
-def train(env, seed, policy_fn, reward_giver, dataset, algo,
+def train(env, seed, policy_fn, reward_giver, dataset, alg,
           g_step, d_step, policy_entcoeff, num_timesteps, save_per_iter,
           checkpoint_dir, log_dir, pretrained, BC_max_iter, task_name=None):
+
+    # print(env, env.seed)
 
     pretrained_weight = None
     if pretrained and (BC_max_iter > 0):
@@ -130,7 +136,7 @@ def train(env, seed, policy_fn, reward_giver, dataset, algo,
         pretrained_weight = behavior_clone.learn(env, policy_fn, dataset,
                                                  max_iters=BC_max_iter)
 
-    if algo == 'trpo':
+    if alg == 'trpo':
         from baselines.gail import trpo_mpi
         # Set up for MPI seed
         rank = MPI.COMM_WORLD.Get_rank()
@@ -158,7 +164,7 @@ def train(env, seed, policy_fn, reward_giver, dataset, algo,
             logger.set_level(logger.DISABLED)
         workerseed = seed + 10000 * MPI.COMM_WORLD.Get_rank()
         set_global_seeds(workerseed)
-        env.seed(workerseed)
+        # env.seed(workerseed)
 
         ppo_mpi.learn(network='mlp', env=env, reward_giver=reward_giver, expert_dataset=dataset,
                       d_step=d_step, total_timesteps=num_timesteps)

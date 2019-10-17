@@ -146,10 +146,10 @@ def learn(*, network, env, reward_giver, expert_dataset, d_step, d_stepsize=3e-4
         # TRPO MPI
         logger.log("Optimizing Disciminator...")
         logger.log(fmt_row(13, reward_giver.loss_name))
-        ob_expert, ac_expert = expert_dataset.get_next_batch(len(ob))
-        batch_size = len(ob) // d_step
+        ob_expert, ac_expert = expert_dataset.get_next_batch(len(obs))
+        batch_size = len(obs) // d_step
         d_losses = []
-        for ob_batch, ac_batch in dataset.iterbatches((ob, ac),
+        for ob_batch, ac_batch in dataset.iterbatches((obs, actions),
                                                       include_final_partial_batch=False,
                                                       batch_size=batch_size):
             ob_expert, ac_expert = expert_dataset.get_next_batch(len(ob_batch))
