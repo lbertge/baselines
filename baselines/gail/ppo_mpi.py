@@ -17,8 +17,8 @@ from baselines import logger
 from baselines.common.mpi_adam import MpiAdam
 from baselines.common.policies import build_policy
 from baselines.common import explained_variance, set_global_seeds
-from baselines.ppo2.runner import Runner
-
+# from baselines.ppo2.runner import Runner
+from baselines.gail.ppo_runner import Runner
 
 def constfn(val):
     def f(_):
@@ -170,12 +170,12 @@ def learn(*, network, env, reward_giver, expert_dataset, d_step, d_stepsize=3e-4
             logger.logkv("misc/total_timesteps", update*nbatch)
             logger.logkv("fps", fps)
             logger.logkv("misc/explained_variance", float(ev))
-            logger.logkv("eplenmean", safemean([epinfo['r'] for epinfo in epinfobuf]))
+            logger.logkv("eprewmean", safemean([epinfo['r'] for epinfo in epinfobuf]))
             logger.logkv("eplenmean", safemean([epinfo['l'] for epinfo in epinfobuf]))
             if eval_env is not None:
-                logger.logkv("eplenmean", safemean([epinfo['r'] for epinfo in eval_epinfobuf]))
-                logger.logkv("eplenmean", safemean([epinfo['l'] for epinfo in eval_epinfobuf]))
-            logger.logkv("misc/time_elapse", tnow - tfirststart)
+                logger.logkv("eval_eprewmean", safemean([epinfo['r'] for epinfo in eval_epinfobuf]))
+                logger.logkv("eval_eplenmean", safemean([epinfo['l'] for epinfo in eval_epinfobuf]))
+            logger.logkv("misc/time_elapsed", tnow - tfirststart)
             for (lossval, lossname) in zip(lossvals, model.loss_names):
                 logger.logkv("loss/" + lossname, lossval)
 
