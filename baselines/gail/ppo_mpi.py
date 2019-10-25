@@ -63,7 +63,7 @@ def learn(*, network, env, reward_giver, expert_dataset, d_step, d_stepsize=3e-4
     if load_path is not None:
         model.load(load_path)
 
-    runner = Runner(env=env, model=model, nsteps=nsteps, gamma=gamma, lam=lam)
+    runner = Runner(env=env, model=model, nsteps=nsteps, gamma=gamma, lam=lam, reward_giver=reward_giver)
     if eval_env is not None:
         eval_runner = Runner(env=eval_env, model=model, nsteps=nsteps, gamma=gamma, lam=lam)
 
