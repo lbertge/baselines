@@ -39,9 +39,10 @@ class Runner(AbstractEnvRunner):
 
             # Take actions in env and look the results
             # Infos contains a ton of useful informations
-            rewards = self.reward_giver.get_reward(self.obs, actions)
             # obs[:] is just a shape checker
-            self.obs[:], _, self.dones, infos = self.env.step(actions)
+            self.obs[:], rewards, self.dones, infos = self.env.step(actions)
+            rewards = self.reward_giver.get_reward(self.obs, actions).flatten()
+            # print(rewards.shape, np.squeeze(self.reward_giver.get_reward(self.obs, actions)).f)
             for info in infos:
                 maybeepinfo = info.get('episode')
                 if maybeepinfo: epinfos.append(maybeepinfo)
