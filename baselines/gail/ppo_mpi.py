@@ -26,7 +26,7 @@ def constfn(val):
     return f
 
 
-def learn(*, network, env, reward_giver, expert_dataset, d_step, d_stepsize=3e-4, total_timesteps, eval_env = None, seed = None, nsteps = 2048, ent_coef = 0.0, lr = 3e-4,
+def learn(*, network, env, reward_giver, expert_dataset, g_step, d_step, d_stepsize=3e-4, total_timesteps, eval_env = None, seed = None, nsteps = 2048, ent_coef = 0.0, lr = 3e-4,
           vf_coef = 0.5, max_grad_norm = 0.5, gamma = 0.99, lam = 0.95,
           log_interval = 10, nminibatches = 4, noptepochs = 4, cliprange = 0.2,
           save_interval = 0, load_path = None, model_fn = None, update_fn = None, init_fn = None, mpi_rank_weight = 1, comm = None, **network_kwargs):
@@ -101,43 +101,45 @@ def learn(*, network, env, reward_giver, expert_dataset, d_step, d_stepsize=3e-4
         lrnow = lr(frac)
         cliprangenow = cliprange(frac)
 
-        if update % log_interval == 0 and is_mpi_root: logger.info('Stepping environment...')
-
-        obs, returns, masks, actions, values, neglogpacs, states, epinfos = runner.run()
-        if eval_env is not None:
-            eval_obs, eval_returns, eval_masks, eval_actions, eval_values, eval_neglogpacs, eval_states, eval_epinfos = eval_runner.run()
-
-        if update % log_interval == 0 and is_mpi_root: logger.info('Done.')
-
-        epinfobuf.extend(epinfos)
-        if eval_env is not None:
-            eval_epinfobuf.extend(eval_epinfos)
-
-        mblossvals = []
         logger.log("Optimizing Policy...")
-        if states is None:
-            inds = np.arange(nbatch)
-            for _ in range(noptepochs):
-                np.random.shuffle(inds)
-                for start in range(0, nbatch, nbatch_train):
-                    end = start + nbatch_train
-                    mbinds = inds[start:end]
-                    slices = (arr[mbinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
-                    mblossvals.append(model.train(lrnow, cliprangenow, *slices))
-        else:
-            assert nenvs % nminibatches == 0
-            envsperbatch = nenvs // nminibatches
-            envinds = np.arange(nenvs)
-            flatinds = np.arange(nenvs * nsteps).reshape(nenvs, nsteps)
-            for _ in range(noptepochs):
-                np.random.shuffle(envinds)
-                for start in range(0, nenvs, envsperbatch):
-                    end = start + envsperbatch
-                    mbenvinds = envinds[start:end]
-                    mbflatinds = flatinds[mbenvinds].ravel()
-                    slices = (arr[mbflatinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
-                    mbstates = states[mbenvinds]
-                    mblossvals.append(model.train(lrnow, cliprangenow, *slices, mbstates))
+        for _ in range(g_step):
+            if update % log_interval == 0 and is_mpi_root: logger.info('Stepping environment...')
+
+            obs, returns, masks, actions, values, neglogpacs, states, epinfos = runner.run()
+            if eval_env is not None:
+                eval_obs, eval_returns, eval_masks, eval_actions, eval_values, eval_neglogpacs, eval_states, eval_epinfos = eval_runner.run()
+
+            if update % log_interval == 0 and is_mpi_root: logger.info('Done.')
+
+            epinfobuf.extend(epinfos)
+            if eval_env is not None:
+                eval_epinfobuf.extend(eval_epinfos)
+
+            mblossvals = []
+            if states is None:
+                inds = np.arange(nbatch)
+                for _ in range(noptepochs):
+                    np.random.shuffle(inds)
+                    for start in range(0, nbatch, nbatch_train):
+                        end = start + nbatch_train
+                        mbinds = inds[start:end]
+                        slices = (arr[mbinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
+                        mblossvals.append(model.train(lrnow, cliprangenow, *slices))
+            else:
+                assert False # make sure we're not going here, so any bugs aren't from here
+                assert nenvs % nminibatches == 0
+                envsperbatch = nenvs // nminibatches
+                envinds = np.arange(nenvs)
+                flatinds = np.arange(nenvs * nsteps).reshape(nenvs, nsteps)
+                for _ in range(noptepochs):
+                    np.random.shuffle(envinds)
+                    for start in range(0, nenvs, envsperbatch):
+                        end = start + envsperbatch
+                        mbenvinds = envinds[start:end]
+                        mbflatinds = flatinds[mbenvinds].ravel()
+                        slices = (arr[mbflatinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
+                        mbstates = states[mbenvinds]
+                        mblossvals.append(model.train(lrnow, cliprangenow, *slices, mbstates))
 
         lossvals = np.mean(mblossvals, axis=0)
         tnow = time.perf_counter()

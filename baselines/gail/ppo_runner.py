@@ -40,12 +40,15 @@ class Runner(AbstractEnvRunner):
             # Take actions in env and look the results
             # Infos contains a ton of useful informations
             # obs[:] is just a shape checker
-            self.obs[:], rewards, self.dones, infos = self.env.step(actions)
+            self.obs[:], true_rewards, self.dones, infos = self.env.step(actions)
             rewards = self.reward_giver.get_reward(self.obs, actions).flatten()
             # print(rewards.shape, np.squeeze(self.reward_giver.get_reward(self.obs, actions)).f)
             for info in infos:
                 maybeepinfo = info.get('episode')
-                if maybeepinfo: epinfos.append(maybeepinfo)
+                if maybeepinfo:
+                    epinfos.append(maybeepinfo)
+                    # print(true_rewards, maybeepinfo)
+                    # assert true_rewards == maybeepinfo['r']
             mb_rewards.append(rewards)
             # mb_true_rewards.append(true_rewards)
         #batch of steps to batch of rollouts

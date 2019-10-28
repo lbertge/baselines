@@ -142,6 +142,7 @@ def train(env, seed, policy_fn, reward_giver, dataset, alg,
         pretrained_weight = behavior_clone.learn(env, policy_fn, dataset,
                                                  max_iters=BC_max_iter)
 
+    nsteps = 1024
     if alg == 'trpo':
         from baselines.gail import trpo_mpi
         # Set up for MPI seed
@@ -158,7 +159,7 @@ def train(env, seed, policy_fn, reward_giver, dataset, alg,
                        max_timesteps=num_timesteps,
                        ckpt_dir=checkpoint_dir, log_dir=log_dir,
                        save_per_iter=save_per_iter,
-                       timesteps_per_batch=1024,
+                       timesteps_per_batch=nsteps,
                        max_kl=0.01, cg_iters=10, cg_damping=0.1,
                        gamma=0.995, lam=0.97,
                        vf_iters=5, vf_stepsize=1e-3,
@@ -173,7 +174,7 @@ def train(env, seed, policy_fn, reward_giver, dataset, alg,
         # env.seed(workerseed)
 
         ppo_mpi.learn(network='mlp', env=env, reward_giver=reward_giver, expert_dataset=dataset,
-                      d_step=d_step, total_timesteps=num_timesteps)
+                      g_step=g_step, d_step=d_step, total_timesteps=num_timesteps, nsteps=nsteps)
 
 
 def runner(env, policy_func, load_model_path, timesteps_per_batch, number_trajs,

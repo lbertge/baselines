@@ -70,7 +70,7 @@ def traj_segment_generator(pi, env, reward_giver, horizon, stochastic):
         prevacs[i] = prevac
 
         rew = reward_giver.get_reward(ob, ac)
-        ob, true_rew, new, _ = env.step(ac)
+        ob, true_rew, new, info = env.step(ac)
         rews[i] = rew
         true_rews[i] = true_rew
 
@@ -103,7 +103,7 @@ def add_vtarg_and_adv(seg, gamma, lam):
 
 
 def learn(env, policy_func, reward_giver, expert_dataset, rank,
-          pretrained_weight, *,
+          pretrained, pretrained_weight, *,
           g_step, d_step, entcoeff, save_per_iter,
           ckpt_dir, log_dir, timesteps_per_batch, task_name,
           gamma, lam,
@@ -314,6 +314,8 @@ def learn(env, policy_func, reward_giver, expert_dataset, rank,
         logger.log("Optimizing Discriminator...")
         logger.log(fmt_row(13, reward_giver.loss_name))
         ob_expert, ac_expert = expert_dataset.get_next_batch(len(ob))
+        print(len(ob), len(ac))
+        quit()
         batch_size = len(ob) // d_step
         d_losses = []  # list of tuples, each of which gives the loss for a minibatch
         for ob_batch, ac_batch in dataset.iterbatches((ob, ac),
