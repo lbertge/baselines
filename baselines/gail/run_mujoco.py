@@ -77,7 +77,15 @@ def main(args):
     U.make_session(num_cpu=1).__enter__()
     set_global_seeds(args.seed)
 
-    env = build_env(args)
+    if args.alg == 'trpo':
+        env = gym.make(args.env)
+        env = bench.Monitor(env, logger.get_dir() and
+                    osp.join(logger.get_dir(), "monitor.json"))
+        env.seed(args.seed)
+    elif args.alg == 'ppo':
+        env = build_env(args)
+    else:
+        raise NotImplementedError
 
     def policy_fn(name, ob_space, ac_space, reuse=False):
         return mlp_policy.MlpPolicy(name=name, ob_space=ob_space, ac_space=ac_space,
@@ -86,8 +94,6 @@ def main(args):
     task_name = get_task_name(args)
     args.checkpoint_dir = osp.join(args.checkpoint_dir, task_name)
     args.log_dir = osp.join(args.log_dir, task_name)
-    
-    print(env)
 
     if args.task == 'train':
         dataset = Mujoco_Dset(expert_path=args.expert_path, traj_limitation=args.traj_limitation)
@@ -146,7 +152,7 @@ def train(env, seed, policy_fn, reward_giver, dataset, alg,
         set_global_seeds(workerseed)
         env.seed(workerseed)
         trpo_mpi.learn(env, policy_fn, reward_giver, dataset, rank,
-                       pretrained_weight=pretrained_weight,
+                       pretrained=pretrained, pretrained_weight=pretrained_weight,
                        g_step=g_step, d_step=d_step,
                        entcoeff=policy_entcoeff,
                        max_timesteps=num_timesteps,
