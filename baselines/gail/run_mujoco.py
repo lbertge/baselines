@@ -76,19 +76,20 @@ def get_task_name(args):
 def main(args):
     U.make_session(num_cpu=1).__enter__()
     set_global_seeds(args.seed)
-
-    env = build_env(args)
+    env = gym.make(args.env_id)
 
     def policy_fn(name, ob_space, ac_space, reuse=False):
         return mlp_policy.MlpPolicy(name=name, ob_space=ob_space, ac_space=ac_space,
                                     reuse=reuse, hid_size=args.policy_hidden_size, num_hid_layers=2)
+
+    env = bench.Monitor(env, logger.get_dir() and
+                        osp.join(logger.get_dir(), "monitor.json"))
+    env.seed(args.seed)
     gym.logger.setLevel(logging.WARN)
     task_name = get_task_name(args)
     args.checkpoint_dir = osp.join(args.checkpoint_dir, task_name)
     args.log_dir = osp.join(args.log_dir, task_name)
     
-    print(env)
-
     if args.task == 'train':
         dataset = Mujoco_Dset(expert_path=args.expert_path, traj_limitation=args.traj_limitation)
         reward_giver = TransitionClassifier(env, args.adversary_hidden_size, entcoeff=args.adversary_entcoeff)
@@ -158,16 +159,29 @@ def train(env, seed, policy_fn, reward_giver, dataset, alg,
                        vf_iters=5, vf_stepsize=1e-3,
                        task_name=task_name)
     else:
-        from baselines.gail import ppo_mpi
+        # from baselines.gail import ppo_mpi
+        # rank = MPI.COMM_WORLD.Get_rank()
+        # if rank != 0:
+        #     logger.set_level(logger.DISABLED)
+        # workerseed = seed + 10000 * MPI.COMM_WORLD.Get_rank()
+        # set_global_seeds(workerseed)
+        # # env.seed(workerseed)
+        #
+        # ppo_mpi.learn(network='mlp', env=env, reward_giver=reward_giver, expert_dataset=dataset,
+        #               d_step=d_step, total_timesteps=num_timesteps)
+        from baselines.gail import pposgd_mpi
         rank = MPI.COMM_WORLD.Get_rank()
         if rank != 0:
             logger.set_level(logger.DISABLED)
-        workerseed = seed + 10000 * MPI.COMM_WORLD.Get_rank()
-        set_global_seeds(workerseed)
-        # env.seed(workerseed)
-
-        ppo_mpi.learn(network='mlp', env=env, reward_giver=reward_giver, expert_dataset=dataset,
-                      d_step=d_step, total_timesteps=num_timesteps)
+            workerseed = seed + 10000 * MPI.COMM_WORLD.Get_rank()
+            set_global_seeds(workerseed)
+            env.seed(workerseed)
+            pposgd_mpi.learn(env, policy_fn, reward_giver, dataset, rank,
+                             pretrained_weight=pretrained_weight,
+                             g_step=g_step, d_step=d_step, timesteps_per_actorbatch=2048,
+                             clip_param=0.2, entcoeff=policy_entcoeff, optim_epochs=10,
+                             optim_stepsize=3e-4, optim_batchsize=64, gamma=0.99, lam=0.95,
+                             max_timesteps=num_timesteps, schedule='linear')
 
 
 def runner(env, policy_func, load_model_path, timesteps_per_batch, number_trajs,
