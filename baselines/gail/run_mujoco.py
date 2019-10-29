@@ -76,7 +76,7 @@ def get_task_name(args):
 def main(args):
     U.make_session(num_cpu=1).__enter__()
     set_global_seeds(args.seed)
-    env = gym.make(args.env_id)
+    env = gym.make(args.env)
 
     def policy_fn(name, ob_space, ac_space, reuse=False):
         return mlp_policy.MlpPolicy(name=name, ob_space=ob_space, ac_space=ac_space,
@@ -89,7 +89,7 @@ def main(args):
     task_name = get_task_name(args)
     args.checkpoint_dir = osp.join(args.checkpoint_dir, task_name)
     args.log_dir = osp.join(args.log_dir, task_name)
-    
+
     if args.task == 'train':
         dataset = Mujoco_Dset(expert_path=args.expert_path, traj_limitation=args.traj_limitation)
         reward_giver = TransitionClassifier(env, args.adversary_hidden_size, entcoeff=args.adversary_entcoeff)
@@ -173,15 +173,15 @@ def train(env, seed, policy_fn, reward_giver, dataset, alg,
         rank = MPI.COMM_WORLD.Get_rank()
         if rank != 0:
             logger.set_level(logger.DISABLED)
-            workerseed = seed + 10000 * MPI.COMM_WORLD.Get_rank()
-            set_global_seeds(workerseed)
-            env.seed(workerseed)
-            pposgd_mpi.learn(env, policy_fn, reward_giver, dataset, rank,
-                             pretrained_weight=pretrained_weight,
-                             g_step=g_step, d_step=d_step, timesteps_per_actorbatch=2048,
-                             clip_param=0.2, entcoeff=policy_entcoeff, optim_epochs=10,
-                             optim_stepsize=3e-4, optim_batchsize=64, gamma=0.99, lam=0.95,
-                             max_timesteps=num_timesteps, schedule='linear')
+        workerseed = seed + 10000 * MPI.COMM_WORLD.Get_rank()
+        set_global_seeds(workerseed)
+        env.seed(workerseed)
+        pposgd_mpi.learn(env, policy_fn, reward_giver, dataset, rank,
+                         pretrained_weight=pretrained_weight,
+                         g_step=g_step, d_step=d_step, timesteps_per_actorbatch=2048,
+                         clip_param=0.2, entcoeff=policy_entcoeff, optim_epochs=10,
+                         optim_stepsize=3e-4, optim_batchsize=64, gamma=0.99, lam=0.95,
+                         max_timesteps=num_timesteps, schedule='linear')
 
 
 def runner(env, policy_func, load_model_path, timesteps_per_batch, number_trajs,

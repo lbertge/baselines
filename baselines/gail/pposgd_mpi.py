@@ -17,6 +17,7 @@ def traj_segment_generator(pi, env, reward_giver, horizon, stochastic):
     cur_ep_ret = 0 # return in current episode
     cur_ep_true_ret = 0
     cur_ep_len = 0 # len of current episode
+    ep_true_rets = []
     ep_rets = [] # returns of completed episodes in this segment
     ep_lens = [] # lengths of ...
 
@@ -38,7 +39,7 @@ def traj_segment_generator(pi, env, reward_giver, horizon, stochastic):
         if t > 0 and t % horizon == 0:
             yield {"ob" : obs, "rew" : rews, "vpred" : vpreds, "new" : news,
                     "ac" : acs, "prevac" : prevacs, "nextvpred": vpred * (1 - new),
-                    "ep_rets" : ep_rets, "ep_lens" : ep_lens}
+                    "ep_rets" : ep_rets, "ep_lens" : ep_lens, "ep_true_rets": ep_true_rets}
             # Be careful!!! if you change the downstream algorithm to aggregate
             # several of these batches, then be sure to do a deepcopy
             ep_rets = []
@@ -86,7 +87,7 @@ def add_vtarg_and_adv(seg, gamma, lam):
     seg["tdlamret"] = seg["adv"] + seg["vpred"]
 
 def learn(env, policy_fn, reward_giver, expert_dataset, rank,
-        pretrained, pretrained_weight, *,
+        pretrained_weight, *,
         g_step, d_step, timesteps_per_actorbatch, # timesteps per actor per update
         clip_param, entcoeff, # clipping parameter epsilon, entropy coeff
         optim_epochs, optim_stepsize, optim_batchsize,# optimization hypers
@@ -122,9 +123,14 @@ def learn(env, policy_fn, reward_giver, expert_dataset, rank,
 
     ratio = tf.exp(pi.pd.logp(ac) - oldpi.pd.logp(ac)) # pnew / pold
     surr1 = ratio * atarg # surrogate from conservative policy iteration
-    surr2 = tf.clip_by_value(ratio, 1.0 - clip_param, 1.0 + clip_param) * atarg #
+    surr2 = tf.clip_by_value(ratio, 1.0 - clip_param, 1.0 + clip_param) * atarg # clipped surrogate
     pol_surr = - tf.reduce_mean(tf.minimum(surr1, surr2)) # PPO's pessimistic surrogate (L^CLIP)
-    vf_loss = tf.reduce_mean(tf.square(pi.vpred - ret))
+
+    vpredclipped = oldpi.vpred + tf.clip_by_value(pi.vpred - oldpi.vpred, -clip_param, clip_param)
+    vf_losses1 = tf.square(pi.vpred - ret) # Unclipped value
+    vf_losses2 = tf.square(vpredclipped - ret) # Clipped value
+    vf_loss = .5 * tf.reduce_mean(tf.maximum(vf_losses1, vf_losses2))
+
     total_loss = pol_surr + pol_entpen + vf_loss
     losses = [pol_surr, pol_entpen, vf_loss, meankl, meanent]
     loss_names = ["pol_surr", "pol_entpen", "vf_loss", "kl", "ent"]
@@ -218,7 +224,6 @@ def learn(env, policy_fn, reward_giver, expert_dataset, rank,
             logger.record_tabular("loss_"+name, lossval)
         logger.record_tabular("ev_tdlam_before", explained_variance(vpredbefore, tdlamret))
 
-
         # ------------------ Update D ------------------
         logger.log("Optimizing Discriminator...")
         logger.log(fmt_row(13, reward_giver.loss_name))
@@ -234,7 +239,7 @@ def learn(env, policy_fn, reward_giver, expert_dataset, rank,
             *newlosses, g = reward_giver.lossandgrad(ob_batch, ac_batch, ob_expert, ac_expert)
             d_adam.update(allmean(g), optim_stepsize)
             d_losses.append(newlosses)
-
+        logger.log(fmt_row(13, np.mean(d_losses, axis=0)))
         lrlocal = (seg["ep_lens"], seg["ep_rets"], seg["ep_true_rets"]) # local values
         listoflrpairs = MPI.COMM_WORLD.allgather(lrlocal) # list of tuples
         lens, rews, true_rets = map(flatten_lists, zip(*listoflrpairs))
