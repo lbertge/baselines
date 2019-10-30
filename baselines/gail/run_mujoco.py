@@ -72,10 +72,28 @@ def get_task_name(args):
     task_name += ".seed_" + str(args.seed)
     return task_name
 
+def configure_logger(log_path, **kwargs):
+    if log_path is not None:
+        logger.configure(log_path)
+    else:
+        logger.configure(**kwargs)
 
 def main(args):
     U.make_session(num_cpu=1).__enter__()
     set_global_seeds(args.seed)
+
+    gym.logger.setLevel(logging.WARN)
+    task_name = get_task_name(args)
+    args.checkpoint_dir = osp.join(args.checkpoint_dir, task_name)
+    args.log_dir = osp.join(args.log_dir, task_name)
+
+    if MPI is None or MPI.COMM_WORLD.Get_rank() == 0:
+        rank = 0
+        configure_logger(args.log_dir)
+    else:
+        rank = MPI.COMM_WORLD.Get_rank()
+        configure_logger(args.log_dir)
+
     env = gym.make(args.env)
 
     def policy_fn(name, ob_space, ac_space, reuse=False):
@@ -85,10 +103,6 @@ def main(args):
     env = bench.Monitor(env, logger.get_dir() and
                         osp.join(logger.get_dir(), "monitor.json"))
     env.seed(args.seed)
-    gym.logger.setLevel(logging.WARN)
-    task_name = get_task_name(args)
-    args.checkpoint_dir = osp.join(args.checkpoint_dir, task_name)
-    args.log_dir = osp.join(args.log_dir, task_name)
 
     if args.task == 'train':
         dataset = Mujoco_Dset(expert_path=args.expert_path, traj_limitation=args.traj_limitation)
