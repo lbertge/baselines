@@ -72,20 +72,21 @@ def get_task_name(args):
     task_name += ".seed_" + str(args.seed)
     return task_name
 
+def configure_logger(log_path, **kwargs):
+    if log_path is not None:
+        logger.configure(log_path)
+    else:
+        logger.configure(**kwargs)
 
 def main(args):
     U.make_session(num_cpu=1).__enter__()
     set_global_seeds(args.seed)
 
-    if args.alg == 'trpo':
-        env = gym.make(args.env)
-        env = bench.Monitor(env, logger.get_dir() and
-                    osp.join(logger.get_dir(), "monitor.json"))
-        env.seed(args.seed)
-    elif args.alg == 'ppo':
-        env = build_env(args)
-    else:
-        raise NotImplementedError
+    env = gym.make(args.env)
+    env = bench.Monitor(env, logger.get_dir() and
+                osp.join(logger.get_dir(), "monitor.json"))
+    env.seed(args.seed)
+
 
     def policy_fn(name, ob_space, ac_space, reuse=False):
         return mlp_policy.MlpPolicy(name=name, ob_space=ob_space, ac_space=ac_space,
@@ -94,6 +95,8 @@ def main(args):
     task_name = get_task_name(args)
     args.checkpoint_dir = osp.join(args.checkpoint_dir, task_name)
     args.log_dir = osp.join(args.log_dir, task_name)
+
+    configure_logger(args.log_dir)
 
     if args.task == 'train':
         dataset = Mujoco_Dset(expert_path=args.expert_path, traj_limitation=args.traj_limitation)
@@ -133,8 +136,6 @@ def train(env, seed, policy_fn, reward_giver, dataset, alg,
           g_step, d_step, policy_entcoeff, num_timesteps, save_per_iter,
           checkpoint_dir, log_dir, pretrained, BC_max_iter, task_name=None):
 
-    # print(env, env.seed)
-
     pretrained_weight = None
     if pretrained and (BC_max_iter > 0):
         # Pretrain with behavior cloning
@@ -142,7 +143,6 @@ def train(env, seed, policy_fn, reward_giver, dataset, alg,
         pretrained_weight = behavior_clone.learn(env, policy_fn, dataset,
                                                  max_iters=BC_max_iter)
 
-    nsteps = 1024
     if alg == 'trpo':
         from baselines.gail import trpo_mpi
         # Set up for MPI seed
@@ -159,22 +159,27 @@ def train(env, seed, policy_fn, reward_giver, dataset, alg,
                        max_timesteps=num_timesteps,
                        ckpt_dir=checkpoint_dir, log_dir=log_dir,
                        save_per_iter=save_per_iter,
-                       timesteps_per_batch=nsteps,
+                       timesteps_per_batch=1024,
                        max_kl=0.01, cg_iters=10, cg_damping=0.1,
                        gamma=0.995, lam=0.97,
                        vf_iters=5, vf_stepsize=1e-3,
                        task_name=task_name)
     else:
-        from baselines.gail import ppo_mpi
+        from baselines.gail import pposgd_simple
         rank = MPI.COMM_WORLD.Get_rank()
         if rank != 0:
             logger.set_level(logger.DISABLED)
         workerseed = seed + 10000 * MPI.COMM_WORLD.Get_rank()
         set_global_seeds(workerseed)
-        # env.seed(workerseed)
-
-        ppo_mpi.learn(network='mlp', env=env, reward_giver=reward_giver, expert_dataset=dataset,
-                      g_step=g_step, d_step=d_step, total_timesteps=num_timesteps, nsteps=nsteps)
+        env.seed(workerseed)
+        pposgd_simple.learn(env, policy_fn, reward_giver, dataset,
+                            g_step=g_step, d_step=d_step,
+                            timesteps_per_actorbatch=2048,
+                            clip_param=0.2, entcoeff=policy_entcoeff,
+                            optim_epochs=10, optim_stepsize=3e-4, optim_batchsize=64,
+                            gamma=0.99, lam=0.95,
+                            max_timesteps=num_timesteps,
+                            schedule='linear')
 
 
 def runner(env, policy_func, load_model_path, timesteps_per_batch, number_trajs,

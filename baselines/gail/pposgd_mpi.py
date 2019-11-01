@@ -1,4 +1,4 @@
-from baselines.common import Dataset, explained_variance, fmt_row, zipsame
+from baselines.common import Dataset, dataset, explained_variance, fmt_row, zipsame
 from baselines import logger
 import baselines.common.tf_util as U
 import tensorflow as tf, numpy as np
@@ -8,19 +8,22 @@ from baselines.common.mpi_moments import mpi_moments
 from mpi4py import MPI
 from collections import deque
 
-def traj_segment_generator(pi, env, horizon, stochastic):
+def traj_segment_generator(pi, env, reward_giver, horizon, stochastic):
     t = 0
     ac = env.action_space.sample() # not used, just so we have the datatype
     new = True # marks if we're on first timestep of an episode
     ob = env.reset()
 
     cur_ep_ret = 0 # return in current episode
+    cur_ep_true_ret = 0
     cur_ep_len = 0 # len of current episode
+    ep_true_rets = []
     ep_rets = [] # returns of completed episodes in this segment
     ep_lens = [] # lengths of ...
 
     # Initialize history arrays
     obs = np.array([ob for _ in range(horizon)])
+    true_rews = np.zeros(horizon, 'float32')
     rews = np.zeros(horizon, 'float32')
     vpreds = np.zeros(horizon, 'float32')
     news = np.zeros(horizon, 'int32')
@@ -36,10 +39,11 @@ def traj_segment_generator(pi, env, horizon, stochastic):
         if t > 0 and t % horizon == 0:
             yield {"ob" : obs, "rew" : rews, "vpred" : vpreds, "new" : news,
                     "ac" : acs, "prevac" : prevacs, "nextvpred": vpred * (1 - new),
-                    "ep_rets" : ep_rets, "ep_lens" : ep_lens}
+                    "ep_rets" : ep_rets, "ep_lens" : ep_lens, "ep_true_rets": ep_true_rets}
             # Be careful!!! if you change the downstream algorithm to aggregate
             # several of these batches, then be sure to do a deepcopy
             ep_rets = []
+            ep_true_rets = []
             ep_lens = []
         i = t % horizon
         obs[i] = ob
@@ -48,15 +52,20 @@ def traj_segment_generator(pi, env, horizon, stochastic):
         acs[i] = ac
         prevacs[i] = prevac
 
-        ob, rew, new, _ = env.step(ac)
+        rew = reward_giver.get_reward(ob, ac)
+        ob, true_rew, new, _ = env.step(ac)
         rews[i] = rew
+        true_rews[i] = true_rew
 
         cur_ep_ret += rew
+        cur_ep_true_ret += true_rew
         cur_ep_len += 1
         if new:
             ep_rets.append(cur_ep_ret)
+            ep_true_rets.append(cur_ep_true_ret)
             ep_lens.append(cur_ep_len)
             cur_ep_ret = 0
+            cur_ep_true_ret = 0
             cur_ep_len = 0
             ob = env.reset()
         t += 1
@@ -77,8 +86,9 @@ def add_vtarg_and_adv(seg, gamma, lam):
         gaelam[t] = lastgaelam = delta + gamma * lam * nonterminal * lastgaelam
     seg["tdlamret"] = seg["adv"] + seg["vpred"]
 
-def learn(env, policy_fn, *,
-        timesteps_per_actorbatch, # timesteps per actor per update
+def learn(env, policy_fn, reward_giver, expert_dataset, rank,
+        pretrained_weight, *,
+        g_step, d_step, timesteps_per_actorbatch, # timesteps per actor per update
         clip_param, entcoeff, # clipping parameter epsilon, entropy coeff
         optim_epochs, optim_stepsize, optim_batchsize,# optimization hypers
         gamma, lam, # advantage estimation
@@ -87,6 +97,10 @@ def learn(env, policy_fn, *,
         adam_epsilon=1e-5,
         schedule='constant' # annealing for stepsize parameters (epsilon and adam)
         ):
+
+    nworkers = MPI.COMM_WORLD.Get_size()
+    rank = MPI.COMM_WORLD.Get_rank()
+
     # Setup losses and stuff
     # ----------------------------------------
     ob_space = env.observation_space
@@ -109,27 +123,40 @@ def learn(env, policy_fn, *,
 
     ratio = tf.exp(pi.pd.logp(ac) - oldpi.pd.logp(ac)) # pnew / pold
     surr1 = ratio * atarg # surrogate from conservative policy iteration
-    surr2 = tf.clip_by_value(ratio, 1.0 - clip_param, 1.0 + clip_param) * atarg #
+    surr2 = tf.clip_by_value(ratio, 1.0 - clip_param, 1.0 + clip_param) * atarg # clipped surrogate
     pol_surr = - tf.reduce_mean(tf.minimum(surr1, surr2)) # PPO's pessimistic surrogate (L^CLIP)
-    vf_loss = tf.reduce_mean(tf.square(pi.vpred - ret))
+
+    vpredclipped = oldpi.vpred + tf.clip_by_value(pi.vpred - oldpi.vpred, -clip_param, clip_param)
+    vf_losses1 = tf.square(pi.vpred - ret) # Unclipped value
+    vf_losses2 = tf.square(vpredclipped - ret) # Clipped value
+    vf_loss = .5 * tf.reduce_mean(tf.maximum(vf_losses1, vf_losses2))
+
     total_loss = pol_surr + pol_entpen + vf_loss
     losses = [pol_surr, pol_entpen, vf_loss, meankl, meanent]
     loss_names = ["pol_surr", "pol_entpen", "vf_loss", "kl", "ent"]
 
     var_list = pi.get_trainable_variables()
     lossandgrad = U.function([ob, ac, atarg, ret, lrmult], losses + [U.flatgrad(total_loss, var_list)])
+    d_adam = MpiAdam(reward_giver.get_trainable_variables())
     adam = MpiAdam(var_list, epsilon=adam_epsilon)
 
     assign_old_eq_new = U.function([],[], updates=[tf.assign(oldv, newv)
         for (oldv, newv) in zipsame(oldpi.get_variables(), pi.get_variables())])
     compute_losses = U.function([ob, ac, atarg, ret, lrmult], losses)
 
+    def allmean(x):
+        assert isinstance(x, np.ndarray)
+        out = np.empty_like(x)
+        MPI.COMM_WORLD.Allreduce(x, out, op=MPI.SUM)
+        out /= nworkers
+        return out
+
     U.initialize()
     adam.sync()
 
     # Prepare for rollouts
     # ----------------------------------------
-    seg_gen = traj_segment_generator(pi, env, timesteps_per_actorbatch, stochastic=True)
+    seg_gen = traj_segment_generator(pi, env, reward_giver, timesteps_per_actorbatch, stochastic=True)
 
     episodes_so_far = 0
     timesteps_so_far = 0
@@ -137,6 +164,7 @@ def learn(env, policy_fn, *,
     tstart = time.time()
     lenbuffer = deque(maxlen=100) # rolling buffer for episode lengths
     rewbuffer = deque(maxlen=100) # rolling buffer for episode rewards
+    true_rewbuffer = deque(maxlen=100)
 
     assert sum([max_iters>0, max_timesteps>0, max_episodes>0, max_seconds>0])==1, "Only one time constraint permitted"
 
@@ -159,30 +187,31 @@ def learn(env, policy_fn, *,
             raise NotImplementedError
 
         logger.log("********** Iteration %i ************"%iters_so_far)
+        logger.log("Optimizing Policy...")
 
-        seg = seg_gen.__next__()
-        add_vtarg_and_adv(seg, gamma, lam)
+        for _ in range(g_step):
+            seg = seg_gen.__next__()
+            add_vtarg_and_adv(seg, gamma, lam)
 
-        # ob, ac, atarg, ret, td1ret = map(np.concatenate, (obs, acs, atargs, rets, td1rets))
-        ob, ac, atarg, tdlamret = seg["ob"], seg["ac"], seg["adv"], seg["tdlamret"]
-        vpredbefore = seg["vpred"] # predicted value function before udpate
-        atarg = (atarg - atarg.mean()) / atarg.std() # standardized advantage function estimate
-        d = Dataset(dict(ob=ob, ac=ac, atarg=atarg, vtarg=tdlamret), deterministic=pi.recurrent)
-        optim_batchsize = optim_batchsize or ob.shape[0]
+            # ob, ac, atarg, ret, td1ret = map(np.concatenate, (obs, acs, atargs, rets, td1rets))
+            ob, ac, atarg, tdlamret = seg["ob"], seg["ac"], seg["adv"], seg["tdlamret"]
+            vpredbefore = seg["vpred"] # predicted value function before udpate
+            atarg = (atarg - atarg.mean()) / atarg.std() # standardized advantage function estimate
+            d = Dataset(dict(ob=ob, ac=ac, atarg=atarg, vtarg=tdlamret), deterministic=pi.recurrent)
+            optim_batchsize = optim_batchsize or ob.shape[0]
 
-        if hasattr(pi, "ob_rms"): pi.ob_rms.update(ob) # update running mean/std for policy
+            if hasattr(pi, "ob_rms"): pi.ob_rms.update(ob) # update running mean/std for policy
 
-        assign_old_eq_new() # set old parameter values to new parameter values
-        logger.log("Optimizing...")
-        logger.log(fmt_row(13, loss_names))
-        # Here we do a bunch of optimization epochs over the data
-        for _ in range(optim_epochs):
-            losses = [] # list of tuples, each of which gives the loss for a minibatch
-            for batch in d.iterate_once(optim_batchsize):
-                *newlosses, g = lossandgrad(batch["ob"], batch["ac"], batch["atarg"], batch["vtarg"], cur_lrmult)
-                adam.update(g, optim_stepsize * cur_lrmult)
-                losses.append(newlosses)
-            logger.log(fmt_row(13, np.mean(losses, axis=0)))
+            assign_old_eq_new() # set old parameter values to new parameter values
+            logger.log(fmt_row(13, loss_names))
+            # Here we do a bunch of optimization epochs over the data
+            for _ in range(optim_epochs):
+                losses = [] # list of tuples, each of which gives the loss for a minibatch
+                for batch in d.iterate_once(optim_batchsize):
+                    *newlosses, g = lossandgrad(batch["ob"], batch["ac"], batch["atarg"], batch["vtarg"], cur_lrmult)
+                    adam.update(g, optim_stepsize * cur_lrmult)
+                    losses.append(newlosses)
+                logger.log(fmt_row(13, np.mean(losses, axis=0)))
 
         logger.log("Evaluating losses...")
         losses = []
@@ -194,17 +223,38 @@ def learn(env, policy_fn, *,
         for (lossval, name) in zipsame(meanlosses, loss_names):
             logger.record_tabular("loss_"+name, lossval)
         logger.record_tabular("ev_tdlam_before", explained_variance(vpredbefore, tdlamret))
-        lrlocal = (seg["ep_lens"], seg["ep_rets"]) # local values
+
+        # ------------------ Update D ------------------
+        logger.log("Optimizing Discriminator...")
+        logger.log(fmt_row(13, reward_giver.loss_name))
+        ob_expert, ac_expert = expert_dataset.get_next_batch(len(ob))
+        batch_size = len(ob) // d_step
+        d_losses = []  # list of tuples, each of which gives the loss for a minibatch
+        for ob_batch, ac_batch in dataset.iterbatches((ob, ac),
+                                                      include_final_partial_batch=False,
+                                                      batch_size=batch_size):
+            ob_expert, ac_expert = expert_dataset.get_next_batch(len(ob_batch))
+            # update running mean/std for reward_giver
+            if hasattr(reward_giver, "obs_rms"): reward_giver.obs_rms.update(np.concatenate((ob_batch, ob_expert), 0))
+            *newlosses, g = reward_giver.lossandgrad(ob_batch, ac_batch, ob_expert, ac_expert)
+            d_adam.update(allmean(g), optim_stepsize)
+            d_losses.append(newlosses)
+        logger.log(fmt_row(13, np.mean(d_losses, axis=0)))
+        lrlocal = (seg["ep_lens"], seg["ep_rets"], seg["ep_true_rets"]) # local values
         listoflrpairs = MPI.COMM_WORLD.allgather(lrlocal) # list of tuples
-        lens, rews = map(flatten_lists, zip(*listoflrpairs))
+        lens, rews, true_rets = map(flatten_lists, zip(*listoflrpairs))
+        true_rewbuffer.extend(true_rets)
         lenbuffer.extend(lens)
         rewbuffer.extend(rews)
+
         logger.record_tabular("EpLenMean", np.mean(lenbuffer))
         logger.record_tabular("EpRewMean", np.mean(rewbuffer))
+        logger.record_tabular("EpTrueRewMean", np.mean(true_rewbuffer))
         logger.record_tabular("EpThisIter", len(lens))
         episodes_so_far += len(lens)
         timesteps_so_far += sum(lens)
         iters_so_far += 1
+
         logger.record_tabular("EpisodesSoFar", episodes_so_far)
         logger.record_tabular("TimestepsSoFar", timesteps_so_far)
         logger.record_tabular("TimeElapsed", time.time() - tstart)
