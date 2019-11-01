@@ -41,7 +41,7 @@ def argsparser():
     #  Mujoco Dataset Configuration
     parser.add_argument('--traj_limitation', type=int, default=-1)
     # Optimization Configuration
-    parser.add_argument('--g_step', help='number of steps to train policy in each epoch', type=int, default=3)
+    parser.add_argument('--g_step', help='number of steps to train policy in each epoch', type=int, default=1)
     parser.add_argument('--d_step', help='number of steps to train discriminator in each epoch', type=int, default=1)
     # Network Configuration (Using MLP Policy)
     parser.add_argument('--policy_hidden_size', type=int, default=100)
@@ -82,21 +82,21 @@ def main(args):
     U.make_session(num_cpu=1).__enter__()
     set_global_seeds(args.seed)
 
+    task_name = get_task_name(args)
+    args.checkpoint_dir = osp.join(args.checkpoint_dir, task_name)
+    args.log_dir = osp.join(args.log_dir, task_name)
+    configure_logger(args.log_dir)
+    gym.logger.setLevel(logging.WARN)
+
     env = gym.make(args.env)
     env = bench.Monitor(env, logger.get_dir() and
                 osp.join(logger.get_dir(), "monitor.json"))
     env.seed(args.seed)
 
-
     def policy_fn(name, ob_space, ac_space, reuse=False):
         return mlp_policy.MlpPolicy(name=name, ob_space=ob_space, ac_space=ac_space,
                                     reuse=reuse, hid_size=args.policy_hidden_size, num_hid_layers=2)
-    gym.logger.setLevel(logging.WARN)
-    task_name = get_task_name(args)
-    args.checkpoint_dir = osp.join(args.checkpoint_dir, task_name)
-    args.log_dir = osp.join(args.log_dir, task_name)
 
-    configure_logger(args.log_dir)
 
     if args.task == 'train':
         dataset = Mujoco_Dset(expert_path=args.expert_path, traj_limitation=args.traj_limitation)
