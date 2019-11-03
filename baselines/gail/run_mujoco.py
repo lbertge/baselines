@@ -90,13 +90,12 @@ def main(args):
 
     env = gym.make(args.env)
     env = bench.Monitor(env, logger.get_dir() and
-                osp.join(logger.get_dir(), "monitor.json"))
+                osp.join(logger.get_dir(), str(MPI.COMM_WORLD.Get_rank())))
     env.seed(args.seed)
 
     def policy_fn(name, ob_space, ac_space, reuse=False):
         return mlp_policy.MlpPolicy(name=name, ob_space=ob_space, ac_space=ac_space,
                                     reuse=reuse, hid_size=args.policy_hidden_size, num_hid_layers=2)
-
 
     if args.task == 'train':
         dataset = Mujoco_Dset(expert_path=args.expert_path, traj_limitation=args.traj_limitation)
@@ -172,7 +171,8 @@ def train(env, seed, policy_fn, reward_giver, dataset, alg,
         workerseed = seed + 10000 * MPI.COMM_WORLD.Get_rank()
         set_global_seeds(workerseed)
         env.seed(workerseed)
-        pposgd_simple.learn(env, policy_fn, reward_giver, dataset,
+        pposgd_simple.learn(env, policy_fn, reward_giver, dataset, rank,
+                            pretrained=pretrained, pretrained_weight=pretrained_weight,
                             g_step=g_step, d_step=d_step,
                             timesteps_per_actorbatch=2048,
                             clip_param=0.2, entcoeff=policy_entcoeff,
