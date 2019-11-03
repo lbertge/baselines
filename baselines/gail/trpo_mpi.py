@@ -18,7 +18,7 @@ from baselines.common import colorize
 from baselines.common.mpi_adam import MpiAdam
 from baselines.common.cg import cg
 from baselines.gail.statistics import stats
-from baselines.gail.utils import traj_segment_generator, add_vtarg_and_adv, flatten_lists
+from baselines.gail.utils import traj_segment_generator, add_vtarg_and_adv, flatten_lists, Discriminator
 
 def learn(env, policy_func, reward_giver, expert_dataset, rank,
           pretrained, pretrained_weight, *,
@@ -120,6 +120,8 @@ def learn(env, policy_func, reward_giver, expert_dataset, rank,
     # Prepare for rollouts
     # ----------------------------------------
     seg_gen = traj_segment_generator(pi, env, reward_giver, timesteps_per_batch, stochastic=True)
+
+    disc = Discriminator(reward_giver, expert_dataset, d_adam, d_step, d_stepsize, nworkers)
 
     episodes_so_far = 0
     timesteps_so_far = 0
@@ -231,19 +233,8 @@ def learn(env, policy_func, reward_giver, expert_dataset, rank,
 
         # ------------------ Update D ------------------
         logger.log("Optimizing Discriminator...")
+        d_losses = disc.update(ob, ac)
         logger.log(fmt_row(13, reward_giver.loss_name))
-        ob_expert, ac_expert = expert_dataset.get_next_batch(len(ob))
-        batch_size = len(ob) // d_step
-        d_losses = []  # list of tuples, each of which gives the loss for a minibatch
-        for ob_batch, ac_batch in dataset.iterbatches((ob, ac),
-                                                      include_final_partial_batch=False,
-                                                      batch_size=batch_size):
-            ob_expert, ac_expert = expert_dataset.get_next_batch(len(ob_batch))
-            # update running mean/std for reward_giver
-            if hasattr(reward_giver, "obs_rms"): reward_giver.obs_rms.update(np.concatenate((ob_batch, ob_expert), 0))
-            *newlosses, g = reward_giver.lossandgrad(ob_batch, ac_batch, ob_expert, ac_expert)
-            d_adam.update(allmean(g), d_stepsize)
-            d_losses.append(newlosses)
         logger.log(fmt_row(13, np.mean(d_losses, axis=0)))
 
         lrlocal = (seg["ep_lens"], seg["ep_rets"], seg["ep_true_rets"])  # local values
